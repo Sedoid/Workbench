@@ -34,6 +34,31 @@ namespace Workbench {
       return false;
     }
 
+    public bool screenshot (string path) {
+      Gtk.Widget widget = this.target;
+      var paintable = new Gtk.WidgetPaintable (widget);
+      int width = widget.get_allocated_width ();
+      int height = widget.get_allocated_height ();
+      var snapshot = new Gtk.Snapshot ();
+      paintable.snapshot (snapshot, width, height);
+      Gsk.RenderNode? node = snapshot.to_node ();
+      if (node == null) {
+        debug (@"Could not get node snapshot, width: $width, height: $height");
+        return false;
+      }
+      Gsk.Renderer? renderer = widget.get_native ()?.get_renderer ();
+      var rect = Graphene.Rect () {
+        origin = Graphene.Point.zero (),
+        size = Graphene.Size () {
+          width = width,
+          height = height
+        }
+      };
+      Gdk.Texture texture = renderer.render_texture (node, rect);
+      texture.save_to_png (path);
+      return true;
+    }
+
     public void update_ui (string content, string target_id, string original_id = "") {
       this.builder = new Gtk.Builder.from_string (content, content.length);
 
@@ -42,6 +67,8 @@ namespace Workbench {
         stderr.printf (@"Widget with target_id='$target_id' could not be found.\n");
         return;
       }
+
+      this.target = target;
 
       if (original_id != "") {
         this.builder.expose_object(original_id, target);
@@ -91,7 +118,7 @@ namespace Workbench {
         var end = section.get_end_location();
         this.css_parser_error(error.message, (int)start.lines, (int)start.line_chars, (int)end.lines, (int)end.line_chars);
       });
-      this.css.load_from_data (content);
+      this.css.load_from_data (content.data);
       Gtk.StyleContext.add_provider_for_display (Gdk.Display.get_default (), this.css , Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
 
@@ -189,6 +216,7 @@ namespace Workbench {
     private delegate void WindowFunction (Gtk.Window window);
 
     private Gtk.Window? window;
+    private Gtk.Widget? target;
     private Gtk.CssProvider? css = null;
     private Module module;
     private Gtk.Builder? builder = null;

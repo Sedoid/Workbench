@@ -1,4 +1,5 @@
 import Gtk from "gi://Gtk";
+import Gdk from "gi://Gdk";
 import GObject from "gi://GObject";
 import GLib from "gi://GLib";
 import Gio from "gi://Gio";
@@ -10,9 +11,9 @@ import { encode, settings, unstack } from "../util.js";
 
 import Internal from "./Internal.js";
 import External from "./External.js";
-import { getClassNameType } from "../overrides.js";
+import { getClassNameType, registerClass } from "../overrides.js";
 
-import { isBuilderable, isPreviewable } from "./utils.js";
+import { assertBuildable, detectCrash, isPreviewable } from "./utils.js";
 
 /*
   Always default to in-process preview
@@ -40,10 +41,7 @@ export default function Previewer({
   const dropdown_preview_align = builder.get_object("dropdown_preview_align");
   // TODO: File a bug libadwaita
   // flat does nothing on GtkDropdown or GtkComboBox or GtkComboBoxText
-  dropdown_preview_align
-    .get_first_child()
-    .get_style_context()
-    .add_class("flat");
+  dropdown_preview_align.get_first_child().add_css_class("flat");
 
   const internal = Internal({
     onWindowChange(open) {
@@ -105,10 +103,12 @@ export default function Previewer({
   function start() {
     stop();
     if (handler_id_ui === null) {
-      handler_id_ui = panel_ui.connect("updated", schedule_update);
+      handler_id_ui = panel_ui.connect("updated", () => schedule_update());
     }
     if (handler_id_css === null) {
-      handler_id_css = code_view_css.connect("changed", schedule_update);
+      handler_id_css = code_view_css.connect("changed", () =>
+        schedule_update(),
+      );
     }
   }
 
@@ -117,7 +117,6 @@ export default function Previewer({
       panel_ui.disconnect(handler_id_ui);
       handler_id_ui = null;
     }
-
     if (handler_id_css) {
       code_view_css.disconnect(handler_id_css);
       handler_id_css = null;
@@ -126,7 +125,7 @@ export default function Previewer({
 
   // Using this custom scope we make sure that previewing UI definitions
   // with signals doesn't fail - in addition, checkout registerSignals
-  const BuilderScope = GObject.registerClass(
+  const BuilderScope = registerClass(
     {
       Implements: [Gtk.BuilderScope],
     },
@@ -148,8 +147,12 @@ export default function Previewer({
     },
   );
 
+  settings.connect("changed::auto-preview", () => {
+    if (settings.get_boolean("auto-preview")) schedule_update();
+  });
   let symbols = null;
-  async function update() {
+  async function update(force = false) {
+    if (!(force || settings.get_boolean("auto-preview"))) return;
     let text = panel_ui.xml.trim();
     let target_id;
     let tree;
@@ -170,9 +173,18 @@ export default function Previewer({
 
     if (!target_id) return;
 
-    // console.time("builderable");
-    if (!(await isBuilderable(text))) return;
-    // console.timeEnd("builderable");
+    try {
+      assertBuildable(tree);
+    } catch (err) {
+      console.warn(err.message);
+      return;
+    }
+
+    if (settings.get_boolean("safe-mode")) {
+      // console.time("detectCrash");
+      if (await detectCrash(text, target_id)) return;
+      // console.timeEnd("detectCrash");
+    }
 
     const builder = new Gtk.Builder();
     const scope = new BuilderScope();
@@ -217,16 +229,18 @@ export default function Previewer({
   const schedule_update = unstack(update, logError);
 
   async function useExternal() {
-    if (current === external) return;
-    await setPreviewer(external);
+    if (current !== external) {
+      await setPreviewer(external);
+    }
     stack.set_visible_child_name("close_window");
-    await update();
+    await update(true);
   }
 
   async function useInternal() {
-    if (current === internal) return;
-    await setPreviewer(internal);
-    await update();
+    if (current !== internal) {
+      await setPreviewer(internal);
+    }
+    await update(true);
   }
 
   async function setPreviewer(previewer) {
@@ -273,7 +287,7 @@ export default function Previewer({
   }
 
   builder.get_object("button_screenshot").connect("clicked", () => {
-    current.screenshot({ window, data_dir });
+    screenshot({ application, window, data_dir, current }).catch(logError);
   });
 
   setPreviewer(internal);
@@ -447,4 +461,42 @@ function makeWorkbenchTargetId() {
 }
 function isWorkbenchTargetId(id) {
   return id.startsWith(target_id_prefix);
+}
+
+async function screenshot({ application, window, data_dir, current }) {
+  const date = new GLib.DateTime().format("%Y-%m-%d %H-%M-%S");
+  // FIXME: GJS does not have Gio.File.new_build_filename
+  const file = Gio.File.new_for_path(
+    GLib.build_filenamev([data_dir, "screenshots", `${date}.png`]),
+  );
+
+  try {
+    file.get_parent().make_directory_with_parents(null);
+  } catch (err) {
+    if (err.code !== Gio.IOErrorEnum.EXISTS) throw err;
+  }
+
+  const success = await current.screenshot({ window, path: file.get_path() });
+  if (!success) return;
+
+  const texture = Gdk.Texture.new_from_file(file);
+  const clipboard = Gdk.Display.get_default().get_clipboard();
+
+  const value = new GObject.Value();
+  value.init(Gdk.Texture);
+  value.set_object(texture);
+
+  clipboard.set(value);
+
+  const notification = new Gio.Notification();
+  const action = Gio.Action.print_detailed_name(
+    "app.show-screenshot",
+    new GLib.Variant("s", file.get_uri()),
+  );
+  notification.set_icon(new Gio.ThemedIcon({ name: "re.sonny.Workbench" }));
+  notification.set_title(_("Workbench Screenshot captured"));
+  notification.set_body(_("You can paste the image from the clipboard."));
+  notification.set_default_action(action);
+  notification.add_button(_("Show in Files"), action);
+  application.send_notification(null, notification);
 }

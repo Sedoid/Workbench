@@ -1,7 +1,5 @@
 import GObject from "gi://GObject";
-import Gtk from "gi://Gtk?version=4.0";
-
-Gtk.init();
+import Gtk from "gi://Gtk";
 
 const AwesomeButton = GObject.registerClass(
   {
@@ -9,10 +7,6 @@ const AwesomeButton = GObject.registerClass(
     Template: workbench.template,
   },
   class AwesomeButton extends Gtk.Button {
-    constructor(params = {}) {
-      super(params);
-    }
-
     onclicked() {
       console.log("Clicked");
     }

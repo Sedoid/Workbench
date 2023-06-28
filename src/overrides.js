@@ -6,6 +6,8 @@ import GObject from "gi://GObject";
  * work in Workbench - keep them to a minimum
  */
 
+export const registerClass = GObject.registerClass;
+
 const types = Object.create(null);
 
 function increment(name) {
@@ -16,7 +18,7 @@ export function overrides() {
   // Makes the app unersponsive - by blocking the mainloop I presume.
   // Anyway, code shouldn't be able to exit
   system.exit = function exit(code) {
-    console.log(`Intercept exit with status "${code}"`);
+    console.log(`Intercepted exit with status "${code}"`);
   };
 
   // GTypeName must be unique globally
@@ -27,14 +29,14 @@ export function overrides() {
   // https://gitlab.gnome.org/GNOME/glib/-/issues/282#note_662735
   // https://gitlab.gnome.org/GNOME/glib/-/issues/2336
   // https://gitlab.gnome.org/GNOME/glib/-/issues/667
-  const _registerClass = GObject.registerClass;
-  GObject.registerClass = function registerClass(klass, ...args) {
-    const { GTypeName } = klass;
+  GObject.registerClass = function registerWorkbenchClass(...args) {
+    const klass = args[0];
+    const GTypeName = klass.GTypeName || args[1]?.name;
     if (GTypeName) {
       types[GTypeName] = increment(GTypeName);
       klass.GTypeName = GTypeName + types[GTypeName];
     }
-    return _registerClass(klass, ...args);
+    return registerClass(...args);
   };
   // This is used to tweak `workbench.template` in order to set the
   //  <template class="?"/> to something that will work next time
